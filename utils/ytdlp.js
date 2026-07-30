@@ -23,6 +23,15 @@ function addCookieArgs(args) {
   return args;
 }
 
+// On cloud servers, YouTube's default web-client verification often flags
+// the request as a bot regardless of valid cookies (datacenter IPs are
+// heavily scrutinized). Pretending to be the YouTube Android app uses a
+// different, less-scrutinized path and frequently avoids this entirely.
+function addClientArgs(args) {
+  args.push('--extractor-args', 'youtube:player_client=android');
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -60,7 +69,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(['--dump-json', '--no-playlist', url]);
+  const output = await runYtDlp(addClientArgs(['--dump-json', '--no-playlist', url]));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -106,6 +115,7 @@ function downloadVideo({ url, formatId, outputPath }) {
     }
 
     args = addCookieArgs(args);
+    args = addClientArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 
