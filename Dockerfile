@@ -34,5 +34,9 @@ COPY . .
 # Render sets $PORT automatically; our app already reads process.env.PORT
 EXPOSE 5000
 
-# Runs both index.js (API) and worker.js (background jobs) together
-CMD ["npm", "start"]
+# Render's secret files (/etc/secrets/...) are read-only, but yt-dlp needs
+# to write updated session data back into the cookies file it reads from.
+# So on startup, copy it to a writable location first, then launch both
+# processes. YTDLP_COOKIES_FILE should point to /tmp/cookies.txt in Render's
+# environment variables (not /etc/secrets/cookies.txt).
+CMD sh -c "if [ -f /etc/secrets/cookies.txt ]; then cp /etc/secrets/cookies.txt /tmp/cookies.txt; fi; npm start"
