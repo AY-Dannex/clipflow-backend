@@ -1,0 +1,93 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { Job } = require('bullmq');
+const downloadQueue = require('../utils/downloadQueue');
+const connection = require('../utils/redisConnection');
+
+const router = express.Router();
+
+const MAX_ATTEMPTS = 5;
+
+function sanitizeFilename(title) {
+  if (!title) return 'clipflow';
+  const cleaned = title
+    .replace(/[/\\?%*:|"<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  return cleaned || 'clipflow';
+}
+
+// POST /api/download
+// Body: { url, formatId, startTime?, endTime?, title? }
+router.post('/download', async (req, res) => {
+  const { url, formatId, startTime, endTime, title } = req.body;
+
+  if (!url || !formatId) {
+    return res.status(400).json({ error: 'url and formatId are required' });
+  }
+
+  const fileId = crypto.randomBytes(8).toString('hex');
+
+  const job = await downloadQueue.add(
+    'download-job',
+    { url, formatId, startTime, endTime, fileId, title },
+    {
+      // If a step fails (most commonly a dropped connection mid-download),
+      // automatically retry instead of just giving up. Fixed 5s gap between
+      // tries avoids hammering the network right after it drops.
+      attempts: MAX_ATTEMPTS,
+      backoff: { type: 'fixed', delay: 5000 },
+    }
+  );
+
+  res.json({ jobId: job.id });
+});
+
+// GET /api/download/status/:jobId
+router.get('/download/status/:jobId', async (req, res) => {
+  const job = await Job.fromId(downloadQueue, req.params.jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const state = await job.getState();
+  const progress = job.progress || { stage: 'queued', percent: 0 };
+
+  const response = { state, progress };
+
+  if (state === 'failed') {
+    response.failedReason = job.failedReason;
+    response.attemptsMade = job.attemptsMade;
+    response.maxAttempts = MAX_ATTEMPTS;
+  }
+
+  res.json(response);
+});
+
+// GET /api/download/result/:jobId
+router.get('/download/result/:jobId', async (req, res) => {
+  const job = await Job.fromId(downloadQueue, req.params.jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const state = await job.getState();
+  if (state !== 'completed') {
+    return res.status(400).json({ error: `Job is not ready yet (current state: ${state})` });
+  }
+
+  const { filePath, title } = job.returnvalue;
+  const downloadName = `${sanitizeFilename(title)}.mp4`;
+
+  res.download(filePath, downloadName, (err) => {
+    fs.unlink(filePath, () => {});
+    if (err) console.error('Error sending file:', err.message);
+  });
+});
+
+module.exports = router;
