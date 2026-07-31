@@ -25,10 +25,12 @@ function addCookieArgs(args) {
 
 // On cloud servers, YouTube's default web-client verification often flags
 // the request as a bot regardless of valid cookies (datacenter IPs are
-// heavily scrutinized). Pretending to be the YouTube Android app uses a
-// different, less-scrutinized path and frequently avoids this entirely.
+// heavily scrutinized) — WARP (see start.sh) is our main defense against
+// that now. Requesting both "web" and "android" clients gives us the full
+// quality range from web, with android as an automatic fallback if web
+// alone gets blocked for a given request.
 function addClientArgs(args) {
-  args.push('--extractor-args', 'youtube:player_client=android');
+  args.push('--extractor-args', 'youtube:player_client=web,android');
   return args;
 }
 
