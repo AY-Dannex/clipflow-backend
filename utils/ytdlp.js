@@ -30,7 +30,10 @@ function addCookieArgs(args) {
 // quality range from web, with android as an automatic fallback if web
 // alone gets blocked for a given request.
 function addClientArgs(args) {
-  args.push('--extractor-args', 'youtube:player_client=web,mweb');
+  args.push('--extractor-args', 'youtube:player_client=web');
+  // Let yt-dlp fetch its updated JS-challenge-solving component — without
+  // this, it silently skips solving and drops most formats.
+  args.push('--remote-components', 'ejs:github');
   return args;
 }
 
