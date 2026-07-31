@@ -23,30 +23,6 @@ function addCookieArgs(args) {
   return args;
 }
 
-// On cloud servers, YouTube's default web-client verification often flags
-// the request as a bot regardless of valid cookies (datacenter IPs are
-// heavily scrutinized) — WARP (see start.sh) is our main defense against
-// that now. Requesting both "web" and "android" clients gives us the full
-// quality range from web, with android as an automatic fallback if web
-// alone gets blocked for a given request.
-function addClientArgs(args) {
-  args.push('--extractor-args', 'youtube:player_client=android');
-  // Let yt-dlp fetch its updated JS-challenge-solving component — without
-  // this, it silently skips solving and drops most formats.
-  args.push('--remote-components', 'ejs:github');
-  return args;
-}
-
-// Optional: route yt-dlp's traffic through a proxy (e.g. Cloudflare WARP's
-// local SOCKS5 proxy at socks5://127.0.0.1:40000), set by start.sh if WARP
-// connects successfully. If unset, requests go out normally.
-function addProxyArgs(args) {
-  if (process.env.PROXY_URL) {
-    args.push('--proxy', process.env.PROXY_URL);
-  }
-  return args;
-}
-
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -74,12 +50,6 @@ function runYtDlp(args) {
       if (code !== 0) {
         reject(new Error(stderr || `yt-dlp exited with code ${code}`));
       } else {
-        // Log warnings even on success — yt-dlp often silently drops
-        // formats it can't fully verify and only mentions why via stderr
-        // warnings, which we'd otherwise never see.
-        if (stderr.trim()) {
-          console.log('yt-dlp warnings:', stderr.trim());
-        }
         resolve(stdout);
       }
     });
@@ -90,7 +60,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(addProxyArgs(addClientArgs(['--dump-json', '--no-playlist', url])));
+  const output = await runYtDlp(['--dump-json', '--no-playlist', url]);
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -136,8 +106,6 @@ function downloadVideo({ url, formatId, outputPath }) {
     }
 
     args = addCookieArgs(args);
-    args = addClientArgs(args);
-    args = addProxyArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 

@@ -17,39 +17,6 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy' });
 });
 
-// TEMPORARY diagnostic route — safe to leave in briefly, doesn't expose
-// cookie contents, only whether things are set up correctly. Remove once
-// the cookies issue is resolved.
-app.get('/debug/cookies-check', (req, res) => {
-  const fs = require('fs');
-  const envValue = process.env.YTDLP_COOKIES_FILE || null;
-  let fileExists = false;
-  let fileSize = null;
-  let firstLine = null;
-
-  if (envValue) {
-    try {
-      fileExists = fs.existsSync(envValue);
-      if (fileExists) {
-        const stats = fs.statSync(envValue);
-        fileSize = stats.size;
-        const content = fs.readFileSync(envValue, 'utf8');
-        firstLine = content.split('\n')[0]; // just the comment header line, not sensitive
-      }
-    } catch (err) {
-      firstLine = `Error reading file: ${err.message}`;
-    }
-  }
-
-  res.json({
-    envVarSet: Boolean(envValue),
-    envVarValue: envValue,
-    fileExists,
-    fileSize,
-    firstLine,
-  });
-});
-
 app.use('/api', videoInfoRoute);
 app.use('/api', downloadRoute);
 
