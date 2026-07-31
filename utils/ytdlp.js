@@ -71,6 +71,12 @@ function runYtDlp(args) {
       if (code !== 0) {
         reject(new Error(stderr || `yt-dlp exited with code ${code}`));
       } else {
+        // Log warnings even on success — yt-dlp often silently drops
+        // formats it can't fully verify and only mentions why via stderr
+        // warnings, which we'd otherwise never see.
+        if (stderr.trim()) {
+          console.log('yt-dlp warnings:', stderr.trim());
+        }
         resolve(stdout);
       }
     });
