@@ -32,6 +32,16 @@ function addClientArgs(args) {
   return args;
 }
 
+// Optional: route yt-dlp's traffic through a proxy (e.g. Cloudflare WARP's
+// local SOCKS5 proxy at socks5://127.0.0.1:40000), set by start.sh if WARP
+// connects successfully. If unset, requests go out normally.
+function addProxyArgs(args) {
+  if (process.env.PROXY_URL) {
+    args.push('--proxy', process.env.PROXY_URL);
+  }
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -69,7 +79,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(addClientArgs(['--dump-json', '--no-playlist', url]));
+  const output = await runYtDlp(addProxyArgs(addClientArgs(['--dump-json', '--no-playlist', url])));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -116,6 +126,7 @@ function downloadVideo({ url, formatId, outputPath }) {
 
     args = addCookieArgs(args);
     args = addClientArgs(args);
+    args = addProxyArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 

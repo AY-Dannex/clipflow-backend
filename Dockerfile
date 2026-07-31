@@ -5,12 +5,14 @@ FROM node:20-bookworm-slim
 # - python3 + pip: needed to run yt-dlp
 # - ffmpeg: needed for merging/trimming video
 # - curl + unzip: needed to install Deno
+# - gnupg: needed to set up Cloudflare WARP's package repository
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     ffmpeg \
     curl \
     unzip \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp via pip (--break-system-packages is required on newer Debian)
@@ -20,6 +22,15 @@ RUN pip3 install --break-system-packages yt-dlp
 RUN curl -fsSL https://deno.land/install.sh | sh
 ENV DENO_INSTALL="/root/.deno"
 ENV PATH="$DENO_INSTALL/bin:$PATH"
+
+# Install Cloudflare WARP client. YouTube's bot detection targets typical
+# datacenter IP ranges (Render, AWS, GCP, etc.), but reportedly treats
+# Cloudflare WARP's IPs differently. This is experimental — Render's
+# container sandboxing may not allow the networking access WARP needs.
+RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" > /etc/apt/sources.list.d/cloudflare-client.list \
+    && apt-get update && apt-get install -y cloudflare-warp \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set up the app directory
 WORKDIR /app
@@ -34,9 +45,8 @@ COPY . .
 # Render sets $PORT automatically; our app already reads process.env.PORT
 EXPOSE 5000
 
-# Render's secret files (/etc/secrets/...) are read-only, but yt-dlp needs
-# to write updated session data back into the cookies file it reads from.
-# So on startup, copy it to a writable location first, then launch both
-# processes. YTDLP_COOKIES_FILE should point to /tmp/cookies.txt in Render's
-# environment variables (not /etc/secrets/cookies.txt).
-CMD sh -c "if [ -f /etc/secrets/cookies.txt ]; then cp /etc/secrets/cookies.txt /tmp/cookies.txt; fi; npm start"
+RUN chmod +x start.sh
+
+# Attempts to connect Cloudflare WARP (see start.sh), then launches both
+# index.js (API) and worker.js (background jobs) together.
+CMD ["./start.sh"]
