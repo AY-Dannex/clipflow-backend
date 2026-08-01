@@ -23,34 +23,52 @@ function toSeconds(time) {
   return parts[0];
 }
 
+// Parses ffmpeg's "-progress pipe:1" machine-readable output (key=value
+// lines) and reports percent complete based on the known total duration.
+function watchFfmpegProgress(proc, totalDurationSec, onProgress) {
+  if (!onProgress || !totalDurationSec) return;
+
+  let buffer = '';
+  proc.stdout.on('data', (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    for (const line of lines) {
+      const match = line.match(/out_time_ms=(\d+)/);
+      if (match) {
+        const elapsedSec = parseInt(match[1], 10) / 1_000_000; // out_time_ms is actually microseconds
+        const percent = Math.min(100, (elapsedSec / totalDurationSec) * 100);
+        onProgress(percent);
+      }
+    }
+  });
+}
+
 /**
  * Trims a video to a specific start time + duration.
- * Using -ss (after -i) + -t (duration) instead of -ss + -to avoids
- * a known ffmpeg ambiguity where -to can be misinterpreted depending on option order.
+ * Calls onProgress(percent 0-100) as ffmpeg works, if provided.
  */
-function trimVideo({ inputPath, outputPath, startTime, endTime }) {
+function trimVideo({ inputPath, outputPath, startTime, endTime, onProgress }) {
   return new Promise((resolve, reject) => {
     const startSec = toSeconds(startTime) || 0;
     const endSec = toSeconds(endTime);
 
+    if (endSec === null || endSec - startSec <= 0) {
+      reject(new Error('endTime must be after startTime'));
+      return;
+    }
+    const clipDuration = endSec - startSec;
+
     const args = ['-y', '-i', inputPath];
-
-    if (startSec > 0) {
-      args.push('-ss', String(startSec));
-    }
-
-    if (endSec !== null) {
-      const duration = endSec - startSec;
-      if (duration <= 0) {
-        reject(new Error('endTime must be after startTime'));
-        return;
-      }
-      args.push('-t', String(duration));
-    }
-
-    args.push('-c:v', 'libx264', '-c:a', 'aac', outputPath);
+    if (startSec > 0) args.push('-ss', String(startSec));
+    args.push('-t', String(clipDuration));
+    args.push('-c:v', 'libx264', '-c:a', 'aac');
+    args.push('-progress', 'pipe:1', '-nostats');
+    args.push(outputPath);
 
     const proc = spawn(FFMPEG_PATH, args);
+    watchFfmpegProgress(proc, clipDuration, onProgress);
 
     let stderr = '';
     proc.stderr.on('data', (chunk) => {
@@ -71,14 +89,13 @@ function trimVideo({ inputPath, outputPath, startTime, endTime }) {
   });
 }
 
-module.exports = { trimVideo };
-
 /**
  * Re-encodes just the audio track to AAC while keeping the video untouched
  * ("copy" = no re-encoding, so this is fast). Used when no trimming is
  * requested, so we still guarantee AAC audio for player compatibility.
+ * Calls onProgress(percent 0-100) as ffmpeg works, if provided.
  */
-function ensureAacAudio({ inputPath, outputPath }) {
+function ensureAacAudio({ inputPath, outputPath, totalDurationSec, onProgress }) {
   return new Promise((resolve, reject) => {
     const args = [
       '-y',
@@ -86,10 +103,12 @@ function ensureAacAudio({ inputPath, outputPath }) {
       '-c:v', 'copy',
       '-c:a', 'aac',
       '-b:a', '192k',
+      '-progress', 'pipe:1', '-nostats',
       outputPath,
     ];
 
     const proc = spawn(FFMPEG_PATH, args);
+    watchFfmpegProgress(proc, totalDurationSec, onProgress);
 
     let stderr = '';
     proc.stderr.on('data', (chunk) => {
@@ -110,4 +129,4 @@ function ensureAacAudio({ inputPath, outputPath }) {
   });
 }
 
-module.exports.ensureAacAudio = ensureAacAudio;
+module.exports = { trimVideo, ensureAacAudio };

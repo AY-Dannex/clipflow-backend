@@ -13,24 +13,32 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 
 const MAX_ATTEMPTS = 5;
 
-// This worker listens for jobs added to the 'video-downloads' queue
-// and processes them one at a time in the background.
+// Creates a throttled progress reporter that maps a 0-100 sub-progress
+// (e.g. yt-dlp's own download percent) into a slice of our overall bar
+// (e.g. 10-70%), without spamming Redis on every tiny update.
+function makeStageReporter(job, { rangeStart, rangeEnd, stage, attempt, maxAttempts }) {
+  let lastSent = -1;
+  return (subPercent) => {
+    const overall = Math.round(rangeStart + (subPercent / 100) * (rangeEnd - rangeStart));
+    if (overall !== lastSent) {
+      lastSent = overall;
+      job.updateProgress({ stage, percent: overall, attempt, maxAttempts }).catch(() => {});
+    }
+  };
+}
+
 const worker = new Worker(
   'video-downloads',
   async (job) => {
-    const { url, formatId, startTime, endTime, fileId, title } = job.data;
+    const { url, formatId, startTime, endTime, fileId, title, duration } = job.data;
 
     const rawPath = path.join(DOWNLOADS_DIR, `${fileId}-raw.mp4`);
     const finalPath = path.join(DOWNLOADS_DIR, `${fileId}-final.mp4`);
     const wantsTrim = Boolean(startTime || endTime);
 
-    // job.attemptsMade is 0 on the very first try, 1 after the first retry, etc.
     const attempt = job.attemptsMade + 1;
 
     if (attempt > 1) {
-      // Let the frontend know this is a retry caused by a dropped
-      // connection, not a fresh download, so the UI can explain it
-      // instead of just silently jumping backward.
       await job.updateProgress({
         stage: 'reconnecting',
         percent: 0,
@@ -40,15 +48,22 @@ const worker = new Worker(
       });
     }
 
+    // Download: 10% -> 70% of the overall bar, driven by yt-dlp's real progress
+    const reportDownload = makeStageReporter(job, {
+      rangeStart: 10, rangeEnd: 70, stage: 'downloading', attempt, maxAttempts: MAX_ATTEMPTS,
+    });
     await job.updateProgress({ stage: 'downloading', percent: 10, attempt, maxAttempts: MAX_ATTEMPTS });
-    await downloadVideo({ url, formatId, outputPath: rawPath });
+    await downloadVideo({ url, formatId, outputPath: rawPath, onProgress: reportDownload });
+
+    // Trim/finalize: 70% -> 100%, driven by ffmpeg's real progress
+    const reportFinal = makeStageReporter(job, {
+      rangeStart: 70, rangeEnd: 99, stage: wantsTrim ? 'trimming' : 'finalizing', attempt, maxAttempts: MAX_ATTEMPTS,
+    });
 
     if (wantsTrim) {
-      await job.updateProgress({ stage: 'trimming', percent: 70, attempt, maxAttempts: MAX_ATTEMPTS });
-      await trimVideo({ inputPath: rawPath, outputPath: finalPath, startTime, endTime });
+      await trimVideo({ inputPath: rawPath, outputPath: finalPath, startTime, endTime, onProgress: reportFinal });
     } else {
-      await job.updateProgress({ stage: 'finalizing', percent: 70, attempt, maxAttempts: MAX_ATTEMPTS });
-      await ensureAacAudio({ inputPath: rawPath, outputPath: finalPath });
+      await ensureAacAudio({ inputPath: rawPath, outputPath: finalPath, totalDurationSec: duration, onProgress: reportFinal });
     }
 
     fs.unlink(rawPath, () => {});
@@ -58,11 +73,6 @@ const worker = new Worker(
   },
   {
     connection,
-    // Downloads can take a while, and on a shaky connection the worker's
-    // "I'm still alive" signal to Redis can arrive late. A short lock
-    // duration would make BullMQ wrongly assume the worker died and
-    // restart the job from scratch. A generous lock (10 min) gives slow
-    // connections room to breathe before that happens.
     lockDuration: 10 * 60 * 1000,
   }
 );
@@ -73,6 +83,18 @@ worker.on('completed', (job) => {
 
 worker.on('failed', (job, err) => {
   console.error(`Job ${job?.id} failed after ${job ? job.attemptsMade + 1 : '?'} attempt(s):`, err.message);
+});
+
+worker.on('error', (err) => {
+  console.error('[Worker] internal error:', err.message);
+});
+
+worker.on('stalled', (jobId) => {
+  console.warn(`[Worker] job ${jobId} stalled`);
+});
+
+worker.on('active', (job) => {
+  console.log(`[Worker] picked up job ${job.id}`);
 });
 
 console.log('Worker started, waiting for jobs...');

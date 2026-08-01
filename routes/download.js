@@ -23,7 +23,7 @@ function sanitizeFilename(title) {
 // POST /api/download
 // Body: { url, formatId, startTime?, endTime?, title? }
 router.post('/download', async (req, res) => {
-  const { url, formatId, startTime, endTime, title } = req.body;
+  const { url, formatId, startTime, endTime, title, duration } = req.body;
 
   if (!url || !formatId) {
     return res.status(400).json({ error: 'url and formatId are required' });
@@ -33,7 +33,7 @@ router.post('/download', async (req, res) => {
 
   const job = await downloadQueue.add(
     'download-job',
-    { url, formatId, startTime, endTime, fileId, title },
+    { url, formatId, startTime, endTime, fileId, title, duration },
     {
       // If a step fails (most commonly a dropped connection mid-download),
       // automatically retry instead of just giving up. Fixed 5s gap between
@@ -48,6 +48,10 @@ router.post('/download', async (req, res) => {
 
 // GET /api/download/status/:jobId
 router.get('/download/status/:jobId', async (req, res) => {
+  // Polling needs a fresh answer every time — without this, browsers can
+  // cache the response and just keep replaying the first snapshot forever.
+  res.set('Cache-Control', 'no-store');
+
   const job = await Job.fromId(downloadQueue, req.params.jobId);
 
   if (!job) {

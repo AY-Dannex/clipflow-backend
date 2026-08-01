@@ -23,6 +23,16 @@ function addCookieArgs(args) {
   return args;
 }
 
+// Optional: route yt-dlp's traffic through a proxy (Cloudflare WARP's local
+// SOCKS5 proxy at socks5://127.0.0.1:40000), set by start.sh if WARP
+// connects successfully on Render. Locally this stays unset.
+function addProxyArgs(args) {
+  if (process.env.PROXY_URL) {
+    args.push('--proxy', process.env.PROXY_URL);
+  }
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -50,6 +60,9 @@ function runYtDlp(args) {
       if (code !== 0) {
         reject(new Error(stderr || `yt-dlp exited with code ${code}`));
       } else {
+        if (stderr.trim()) {
+          console.log('yt-dlp warnings:', stderr.trim());
+        }
         resolve(stdout);
       }
     });
@@ -60,7 +73,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(['--dump-json', '--no-playlist', url]);
+  const output = await runYtDlp(addProxyArgs(['--dump-json', '--no-playlist', url]));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -87,9 +100,11 @@ async function getVideoInfo(url) {
 
 /**
  * Downloads a video to a local file using yt-dlp.
+ * Calls onProgress(percent) with yt-dlp's real download progress (0-100)
+ * as it happens, parsed from its stdout output.
  * Returns the full path to the downloaded file.
  */
-function downloadVideo({ url, formatId, outputPath }) {
+function downloadVideo({ url, formatId, outputPath, onProgress }) {
   return new Promise((resolve, reject) => {
     const formatSelector = `${formatId}+bestaudio/best`;
 
@@ -97,6 +112,7 @@ function downloadVideo({ url, formatId, outputPath }) {
       '--no-playlist',
       '-f', formatSelector,
       '--merge-output-format', 'mp4',
+      '--newline', // forces one progress line per update instead of overwriting a single line, so we can read each one
       '-o', outputPath,
       url,
     ];
@@ -106,10 +122,29 @@ function downloadVideo({ url, formatId, outputPath }) {
     }
 
     args = addCookieArgs(args);
+    args = addProxyArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 
     let stderr = '';
+    let stdoutBuffer = '';
+    // yt-dlp prints lines like: [download]  45.2% of   10.00MiB at  1.20MiB/s ETA 00:04
+    const progressPattern = /\[download\]\s+(\d+(?:\.\d+)?)%/;
+
+    proc.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop(); // keep the last, possibly incomplete line for next time
+
+      if (onProgress) {
+        for (const line of lines) {
+          const match = line.match(progressPattern);
+          if (match) {
+            onProgress(parseFloat(match[1]));
+          }
+        }
+      }
+    });
 
     proc.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
