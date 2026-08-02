@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const connection = require('./utils/redisConnection');
 const { downloadVideo } = require('./utils/ytdlp');
+const { downloadThreadsVideo, isThreadsUrl } = require('./utils/threadsScraper');
 const { trimVideo, ensureAacAudio } = require('./utils/ffmpeg');
 
 const DOWNLOADS_DIR = path.join(__dirname, 'downloads');
@@ -53,7 +54,12 @@ const worker = new Worker(
       rangeStart: 10, rangeEnd: 70, stage: 'downloading', attempt, maxAttempts: MAX_ATTEMPTS,
     });
     await job.updateProgress({ stage: 'downloading', percent: 10, attempt, maxAttempts: MAX_ATTEMPTS });
-    await downloadVideo({ url, formatId, outputPath: rawPath, onProgress: reportDownload });
+
+    if (isThreadsUrl(url)) {
+      await downloadThreadsVideo({ url, outputPath: rawPath, onProgress: reportDownload });
+    } else {
+      await downloadVideo({ url, formatId, outputPath: rawPath, onProgress: reportDownload });
+    }
 
     // Trim/finalize: 70% -> 100%, driven by ffmpeg's real progress
     const reportFinal = makeStageReporter(job, {
@@ -74,6 +80,10 @@ const worker = new Worker(
   {
     connection,
     lockDuration: 10 * 60 * 1000,
+    // Process up to 2 jobs at once. Kept conservative given Render's free
+    // tier is only 512MB RAM / 0.1 CPU — higher risks memory crashes or
+    // jobs fighting each other for CPU during video encoding.
+    concurrency: 2,
   }
 );
 
