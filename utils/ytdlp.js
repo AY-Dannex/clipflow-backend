@@ -42,6 +42,15 @@ function addRemoteComponentArgs(args) {
   return args;
 }
 
+// Some platforms (TikTok especially) reject requests unless they look like
+// they're coming from a real browser at the network level, not just a
+// normal User-Agent header. --impersonate does this properly using
+// curl_cffi. Harmless for platforms that don't need it.
+function addImpersonateArgs(args) {
+  args.push('--impersonate', 'chrome');
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -82,7 +91,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url])));
+  const output = await runYtDlp(addImpersonateArgs(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url]))));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -133,6 +142,7 @@ function downloadVideo({ url, formatId, outputPath, onProgress }) {
     args = addCookieArgs(args);
     args = addProxyArgs(args);
     args = addRemoteComponentArgs(args);
+    args = addImpersonateArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 
