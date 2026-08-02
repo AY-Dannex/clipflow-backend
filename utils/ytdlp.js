@@ -33,6 +33,15 @@ function addProxyArgs(args) {
   return args;
 }
 
+// Newer yt-dlp versions require explicit permission to download/use their
+// updated JS-challenge-solving component — without this, it silently skips
+// solving YouTube's challenges and most formats become unavailable, even
+// with Deno already installed.
+function addRemoteComponentArgs(args) {
+  args.push('--remote-components', 'ejs:github');
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -73,7 +82,7 @@ function runYtDlp(args) {
  * Fetches metadata + available formats for a given video URL.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(addProxyArgs(['--dump-json', '--no-playlist', url]));
+  const output = await runYtDlp(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url])));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])
@@ -123,6 +132,7 @@ function downloadVideo({ url, formatId, outputPath, onProgress }) {
 
     args = addCookieArgs(args);
     args = addProxyArgs(args);
+    args = addRemoteComponentArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
 
