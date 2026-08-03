@@ -51,6 +51,14 @@ function addImpersonateArgs(args) {
   return args;
 }
 
+function addCommonArgs(args) {
+  args = addCookieArgs(args);
+  args = addProxyArgs(args);
+  args = addRemoteComponentArgs(args);
+  args = addImpersonateArgs(args);
+  return args;
+}
+
 /**
  * Runs yt-dlp with the given arguments and returns stdout as a string.
  * Rejects with a readable error message if yt-dlp fails.
@@ -89,6 +97,8 @@ function runYtDlp(args) {
 
 /**
  * Fetches metadata + available formats for a given video URL.
+ * Each format now also reports hasAudio, so the download step knows
+ * whether it's a single combined stream or needs a separate audio track.
  */
 async function getVideoInfo(url) {
   const output = await runYtDlp(addImpersonateArgs(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url]))));
@@ -102,6 +112,7 @@ async function getVideoInfo(url) {
       ext: f.ext,
       height: f.height || 0,
       filesize: f.filesize || f.filesize_approx || null,
+      hasAudio: f.acodec !== 'none' && f.acodec !== undefined && f.acodec !== null,
     }))
     .filter((f, index, arr) => arr.findIndex((x) => x.quality === f.quality) === index)
     .sort((a, b) => b.height - a.height);
@@ -117,34 +128,27 @@ async function getVideoInfo(url) {
 }
 
 /**
- * Downloads a video to a local file using yt-dlp.
- * Calls onProgress(percent) with yt-dlp's real download progress (0-100)
- * as it happens, parsed from its stdout output.
- * Returns the full path to the downloaded file.
+ * Runs a yt-dlp download with a given format selector, reporting live
+ * progress and exposing the running process via processRef so the caller
+ * can kill it (used for cancellation). Shared by every download variant
+ * below so there's only one place that actually spawns yt-dlp for downloads.
  */
-function downloadVideo({ url, formatId, outputPath, onProgress }) {
+function runYtDlpDownload({ url, formatSelector, outputPath, merge, onProgress, processRef }) {
   return new Promise((resolve, reject) => {
-    const formatSelector = `${formatId}+bestaudio/best`;
+    let args = ['--no-playlist', '-f', formatSelector, '--newline', '-o', outputPath, url];
 
-    let args = [
-      '--no-playlist',
-      '-f', formatSelector,
-      '--merge-output-format', 'mp4',
-      '--newline', // forces one progress line per update instead of overwriting a single line, so we can read each one
-      '-o', outputPath,
-      url,
-    ];
+    if (merge) {
+      args.push('--merge-output-format', 'mp4');
+    }
 
     if (process.env.FFMPEG_PATH) {
       args.push('--ffmpeg-location', process.env.FFMPEG_PATH);
     }
 
-    args = addCookieArgs(args);
-    args = addProxyArgs(args);
-    args = addRemoteComponentArgs(args);
-    args = addImpersonateArgs(args);
+    args = addCommonArgs(args);
 
     const proc = spawn(YTDLP_PATH, args);
+    if (processRef) processRef.current = proc;
 
     let stderr = '';
     let stdoutBuffer = '';
@@ -154,7 +158,7 @@ function downloadVideo({ url, formatId, outputPath, onProgress }) {
     proc.stdout.on('data', (chunk) => {
       stdoutBuffer += chunk.toString();
       const lines = stdoutBuffer.split('\n');
-      stdoutBuffer = lines.pop(); // keep the last, possibly incomplete line for next time
+      stdoutBuffer = lines.pop();
 
       if (onProgress) {
         for (const line of lines) {
@@ -174,8 +178,13 @@ function downloadVideo({ url, formatId, outputPath, onProgress }) {
       reject(new Error(`Failed to start yt-dlp: ${err.message}`));
     });
 
-    proc.on('close', (code) => {
-      if (code !== 0) {
+    proc.on('close', (code, signal) => {
+      if (processRef) processRef.current = null;
+      if (signal === 'SIGKILL') {
+        // Process was deliberately killed (cancellation) — let the caller's
+        // own cancellation check handle this, not a generic failure.
+        reject(new Error('PROCESS_KILLED'));
+      } else if (code !== 0) {
         reject(new Error(stderr || `yt-dlp exited with code ${code}`));
       } else {
         resolve(outputPath);
@@ -184,4 +193,36 @@ function downloadVideo({ url, formatId, outputPath, onProgress }) {
   });
 }
 
-module.exports = { runYtDlp, getVideoInfo, downloadVideo };
+/**
+ * Downloads a video for the "no trim" path. If the format already has
+ * audio, downloads it alone (fast). Otherwise asks yt-dlp to merge in the
+ * best available audio track itself.
+ */
+function downloadCombined({ url, formatId, hasAudio, outputPath, onProgress, processRef }) {
+  const formatSelector = hasAudio ? formatId : `${formatId}+bestaudio/best`;
+  return runYtDlpDownload({ url, formatSelector, outputPath, merge: !hasAudio, onProgress, processRef });
+}
+
+/**
+ * Downloads exactly one raw stream (no merging) — used by the trim
+ * pipeline for both combined-format and video-only downloads.
+ */
+function downloadSingleFormat({ url, formatId, outputPath, onProgress, processRef }) {
+  return runYtDlpDownload({ url, formatSelector: formatId, outputPath, merge: false, onProgress, processRef });
+}
+
+/**
+ * Downloads just the best available audio track alone — used by the trim
+ * pipeline when the chosen video format has no audio of its own.
+ */
+function downloadBestAudio({ url, outputPath, onProgress, processRef }) {
+  return runYtDlpDownload({ url, formatSelector: 'bestaudio', outputPath, merge: false, onProgress, processRef });
+}
+
+module.exports = {
+  runYtDlp,
+  getVideoInfo,
+  downloadCombined,
+  downloadSingleFormat,
+  downloadBestAudio,
+};

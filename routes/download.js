@@ -21,9 +21,9 @@ function sanitizeFilename(title) {
 }
 
 // POST /api/download
-// Body: { url, formatId, startTime?, endTime?, title? }
+// Body: { url, formatId, hasAudio, startTime?, endTime?, title?, duration? }
 router.post('/download', async (req, res) => {
-  const { url, formatId, startTime, endTime, title, duration } = req.body;
+  const { url, formatId, hasAudio, startTime, endTime, title, duration } = req.body;
 
   if (!url || !formatId) {
     return res.status(400).json({ error: 'url and formatId are required' });
@@ -33,7 +33,7 @@ router.post('/download', async (req, res) => {
 
   const job = await downloadQueue.add(
     'download-job',
-    { url, formatId, startTime, endTime, fileId, title, duration },
+    { url, formatId, hasAudio: Boolean(hasAudio), startTime, endTime, fileId, title, duration },
     {
       // If a step fails (most commonly a dropped connection mid-download),
       // automatically retry instead of just giving up. Fixed 5s gap between
@@ -48,8 +48,6 @@ router.post('/download', async (req, res) => {
 
 // GET /api/download/status/:jobId
 router.get('/download/status/:jobId', async (req, res) => {
-  // Polling needs a fresh answer every time — without this, browsers can
-  // cache the response and just keep replaying the first snapshot forever.
   res.set('Cache-Control', 'no-store');
 
   const job = await Job.fromId(downloadQueue, req.params.jobId);
@@ -58,18 +56,47 @@ router.get('/download/status/:jobId', async (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  const state = await job.getState();
+  let state = await job.getState();
   const progress = job.progress || { stage: 'queued', percent: 0 };
 
   const response = { state, progress };
 
   if (state === 'failed') {
-    response.failedReason = job.failedReason;
-    response.attemptsMade = job.attemptsMade;
-    response.maxAttempts = MAX_ATTEMPTS;
+    const wasCancelled = await connection.get(`cancel:${req.params.jobId}`);
+    if (wasCancelled) {
+      response.state = 'cancelled';
+    } else {
+      response.failedReason = job.failedReason;
+      response.attemptsMade = job.attemptsMade;
+      response.maxAttempts = MAX_ATTEMPTS;
+    }
   }
 
   res.json(response);
+});
+
+// POST /api/download/cancel/:jobId
+// Stops a job that's queued or actively processing. Queued jobs are
+// removed immediately; active jobs get a "please stop" flag that the
+// worker checks every couple of seconds.
+router.post('/download/cancel/:jobId', async (req, res) => {
+  const job = await Job.fromId(downloadQueue, req.params.jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const state = await job.getState();
+
+  if (state === 'waiting' || state === 'delayed') {
+    await job.remove();
+    return res.json({ cancelled: true, wasActive: false });
+  }
+
+  // Flag it for the worker to notice and terminate. Expires after an hour
+  // as a safety net so old flags don't linger in Redis forever.
+  await connection.set(`cancel:${req.params.jobId}`, '1', 'EX', 3600);
+  res.json({ cancelled: true, wasActive: true });
 });
 
 // GET /api/download/result/:jobId
