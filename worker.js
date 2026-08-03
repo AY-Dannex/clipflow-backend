@@ -74,6 +74,10 @@ const worker = new Worker(
   {
     connection,
     lockDuration: 10 * 60 * 1000,
+    // Process up to 2 jobs at once. Kept conservative given Render's free
+    // tier is only 512MB RAM / 0.1 CPU — higher risks memory crashes or
+    // jobs fighting each other for CPU during video encoding.
+    concurrency: 2,
   }
 );
 
