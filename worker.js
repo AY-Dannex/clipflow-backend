@@ -198,10 +198,10 @@ const worker = new Worker(
   {
     connection,
     lockDuration: 10 * 60 * 1000,
-    // Process up to 4 jobs at once. Stream-copy trimming barely touches
-    // the CPU, so this is safe on Render's free tier (512MB RAM / 0.1 CPU)
-    // as long as most jobs aren't the separate-stream re-encode-heavy path.
-    concurrency: 4,
+    // Dropped to 1 after an out-of-memory crash on Render's free tier
+    // (512MB), to isolate whether concurrency was the cause before
+    // considering bigger architectural changes.
+    concurrency: 1,
   }
 );
 
