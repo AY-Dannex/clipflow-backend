@@ -25,14 +25,19 @@ function toSeconds(time) {
 
 // Parses ffmpeg's "-progress pipe:1" machine-readable output (key=value
 // lines) and reports percent complete based on the known total duration.
+//
+// IMPORTANT: we always attach this listener and drain stdout, even when
+// there's nothing useful to report. ffmpeg writes progress data to this
+// pipe constantly — if nothing reads it, the pipe fills up and ffmpeg
+// itself freezes waiting for space, which looked like a stuck download.
 function watchFfmpegProgress(proc, totalDurationSec, onProgress) {
-  if (!onProgress || !totalDurationSec) return;
-
   let buffer = '';
   proc.stdout.on('data', (chunk) => {
     buffer += chunk.toString();
     const lines = buffer.split('\n');
     buffer = lines.pop();
+
+    if (!onProgress || !totalDurationSec) return;
 
     for (const line of lines) {
       const match = line.match(/out_time_ms=(\d+)/);

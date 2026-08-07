@@ -51,11 +51,24 @@ function addImpersonateArgs(args) {
   return args;
 }
 
+// Optional: points yt-dlp at a PO Token provider server, needed to unlock
+// YouTube's higher-quality formats. Runs as its own separate service (see
+// POT_PROVIDER_URL in .env) rather than locally, to keep this container's
+// memory usage low. If unset, YouTube quality caps around 360p — everything
+// else is unaffected either way.
+function addPotProviderArgs(args) {
+  if (process.env.POT_PROVIDER_URL) {
+    args.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${process.env.POT_PROVIDER_URL}`);
+  }
+  return args;
+}
+
 function addCommonArgs(args) {
   args = addCookieArgs(args);
   args = addProxyArgs(args);
   args = addRemoteComponentArgs(args);
   args = addImpersonateArgs(args);
+  args = addPotProviderArgs(args);
   return args;
 }
 
@@ -101,7 +114,7 @@ function runYtDlp(args) {
  * whether it's a single combined stream or needs a separate audio track.
  */
 async function getVideoInfo(url) {
-  const output = await runYtDlp(addImpersonateArgs(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url]))));
+  const output = await runYtDlp(addPotProviderArgs(addImpersonateArgs(addRemoteComponentArgs(addProxyArgs(['--dump-json', '--no-playlist', url])))));
   const data = JSON.parse(output);
 
   const formats = (data.formats || [])

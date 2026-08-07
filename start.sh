@@ -30,11 +30,4 @@ else
   echo "WARP registration failed (likely blocked by container sandboxing) — continuing without proxy."
 fi
 
-# Start the PO Token provider server in the background. yt-dlp will
-# auto-detect it at 127.0.0.1:4416 (its default address) without needing
-# any extra configuration.
-echo "Starting PO Token provider..."
-node /opt/bgutil/server/build/main.js &
-sleep 2
-
 npm start

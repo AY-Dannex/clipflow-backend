@@ -6,10 +6,6 @@ FROM node:20-bookworm-slim
 # - ffmpeg: needed for merging/trimming video
 # - curl + unzip: needed to install Deno
 # - gnupg: needed to set up Cloudflare WARP's package repository
-# - git: needed to fetch the PO Token provider source
-# - build-essential, libcairo2-dev, libpango1.0-dev, libjpeg-dev, libgif-dev,
-#   librsvg2-dev, pkg-config: needed to compile the "canvas" native module
-#   that the PO Token provider depends on
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -17,14 +13,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     gnupg \
-    git \
-    build-essential \
-    libcairo2-dev \
-    libpango1.0-dev \
-    libjpeg-dev \
-    libgif-dev \
-    librsvg2-dev \
-    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp via pip (--break-system-packages is required on newer Debian)
@@ -35,28 +23,21 @@ RUN pip3 install --break-system-packages yt-dlp
 # yet recognized by yt-dlp's impersonation detection.
 RUN pip3 install --break-system-packages "curl_cffi==0.13.0"
 
+# Install just the lightweight Python-side PO Token plugin (not the heavy
+# canvas-based server — that runs as its own separate Render service now,
+# to keep memory usage here low). This just lets yt-dlp know HOW to talk
+# to that remote server; the actual token-generating work happens over there.
+RUN pip3 install --break-system-packages -U bgutil-ytdlp-pot-provider
+
 # Install Deno (needed for yt-dlp to solve YouTube's signature challenges)
 RUN curl -fsSL https://deno.land/install.sh | sh
 ENV DENO_INSTALL="/root/.deno"
 ENV PATH="$DENO_INSTALL/bin:$PATH"
 
-# Install the PO Token provider (bgutil-ytdlp-pot-provider). This runs as
-# its own small local server that generates the tokens YouTube now requires
-# to unlock higher-quality formats. yt-dlp auto-detects it at its default
-# address (127.0.0.1:4416) once both pieces below are in place — no extra
-# yt-dlp arguments needed.
-RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil \
-    && cd /opt/bgutil/server \
-    && npm ci \
-    && npx tsc
-
-# Installs the Python-side plugin that lets yt-dlp talk to the server above
-RUN pip3 install --break-system-packages -U bgutil-ytdlp-pot-provider
-
 # Install Cloudflare WARP client. YouTube's bot detection targets typical
 # datacenter IP ranges (Render, AWS, GCP, etc.), but reportedly treats
-# Cloudflare WARP's IPs differently. This is experimental — Render's
-# container sandboxing may not allow the networking access WARP needs.
+# Cloudflare WARP's IPs differently. This is what gets us past YouTube's
+# outright block on Render — without it, YouTube fails completely here.
 RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" > /etc/apt/sources.list.d/cloudflare-client.list \
     && apt-get update && apt-get install -y cloudflare-warp \
