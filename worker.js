@@ -46,10 +46,15 @@ const worker = new Worker(
     const audioCodec = needsAudioSafety(url) ? 'aac' : 'copy';
     const attempt = job.attemptsMade + 1;
 
+    // Every attempt of this job gets its OWN unique file names (fileId +
+    // which attempt number this is), never reused across attempts. This
+    // guarantees two attempts of the same job can never collide or
+    // overwrite/delete each other's files, even if BullMQ's retry timing
+    // and an earlier attempt's cleanup happen to overlap unexpectedly
+    // (e.g. during a shaky connection to Redis itself).
+    const runId = `${fileId}-a${attempt}`;
+
     // --- Cancellation setup ---
-    // A "please stop" flag lives in Redis at cancel:<jobId>. We poll for it
-    // every couple seconds and, if set, kill whatever process is currently
-    // running and unwind the job as cancelled (not a failure, no retry).
     let cancelled = false;
     const currentProcess = { current: null };
     const cancelCheckInterval = setInterval(async () => {
@@ -72,15 +77,18 @@ const worker = new Worker(
       }
     }
 
-    // Every temp file this job might create, tracked so we can always
-    // clean up fully regardless of which path succeeds or fails.
+    // Every temp file this attempt might create, tracked so we can always
+    // clean up fully regardless of which path succeeds or fails. finalPath
+    // is only added here for the FAILURE-cleanup case — a genuinely
+    // successful attempt returns before that cleanup ever runs, so a
+    // finished file always survives.
     const tempFiles = [];
-    const rawPath = path.join(DOWNLOADS_DIR, `${fileId}-raw.mp4`);
-    const videoOnlyPath = path.join(DOWNLOADS_DIR, `${fileId}-video.mp4`);
-    const audioOnlyPath = path.join(DOWNLOADS_DIR, `${fileId}-audio.m4a`);
-    const trimmedVideoPath = path.join(DOWNLOADS_DIR, `${fileId}-video-trimmed.mp4`);
-    const trimmedAudioPath = path.join(DOWNLOADS_DIR, `${fileId}-audio-trimmed.m4a`);
-    const finalPath = path.join(DOWNLOADS_DIR, `${fileId}-final.mp4`);
+    const rawPath = path.join(DOWNLOADS_DIR, `${runId}-raw.mp4`);
+    const videoOnlyPath = path.join(DOWNLOADS_DIR, `${runId}-video.mp4`);
+    const audioOnlyPath = path.join(DOWNLOADS_DIR, `${runId}-audio.m4a`);
+    const trimmedVideoPath = path.join(DOWNLOADS_DIR, `${runId}-video-trimmed.mp4`);
+    const trimmedAudioPath = path.join(DOWNLOADS_DIR, `${runId}-audio-trimmed.m4a`);
+    const finalPath = path.join(DOWNLOADS_DIR, `${runId}-final.mp4`);
 
     try {
       if (attempt > 1) {
@@ -90,8 +98,7 @@ const worker = new Worker(
       }
 
       if (!wantsTrim) {
-        // ---------- NO TRIM: download (merging if needed), optionally fix audio ----------
-        tempFiles.push(rawPath);
+        tempFiles.push(rawPath, finalPath);
         const reportDownload = makeStageReporter(job, {
           rangeStart: 10, rangeEnd: 70, stage: 'downloading', attempt, maxAttempts: MAX_ATTEMPTS,
         });
@@ -100,7 +107,6 @@ const worker = new Worker(
         throwIfCancelled();
 
         if (needsAudioSafety(url)) {
-          tempFiles.push(finalPath);
           const reportFinal = makeStageReporter(job, {
             rangeStart: 70, rangeEnd: 99, stage: 'finalizing', attempt, maxAttempts: MAX_ATTEMPTS,
           });
@@ -108,11 +114,9 @@ const worker = new Worker(
           throwIfCancelled();
           safeUnlink(rawPath);
         } else {
-          // No known audio risk on this platform — the raw download IS the final file.
           fs.renameSync(rawPath, finalPath);
         }
       } else if (hasAudio) {
-        // ---------- TRIM, single combined stream: download -> trim by copy ----------
         tempFiles.push(rawPath, finalPath);
         const reportDownload = makeStageReporter(job, {
           rangeStart: 10, rangeEnd: 60, stage: 'downloading', attempt, maxAttempts: MAX_ATTEMPTS,
@@ -131,7 +135,6 @@ const worker = new Worker(
         throwIfCancelled();
         safeUnlink(rawPath);
       } else {
-        // ---------- TRIM, separate video+audio streams: download both, trim both, merge ----------
         tempFiles.push(videoOnlyPath, audioOnlyPath, trimmedVideoPath, trimmedAudioPath, finalPath);
 
         const reportVideoDl = makeStageReporter(job, {
@@ -160,7 +163,6 @@ const worker = new Worker(
         const reportAudioTrim = makeStageReporter(job, {
           rangeStart: 65, rangeEnd: 80, stage: 'trimming audio', attempt, maxAttempts: MAX_ATTEMPTS,
         });
-        // Audio-only input: videoCodec is irrelevant here (no video stream present).
         await trimStream({
           inputPath: audioOnlyPath, outputPath: trimmedAudioPath, startTime, endTime,
           videoCodec: 'copy', audioCodec, onProgress: reportAudioTrim, processRef: currentProcess,
@@ -176,18 +178,17 @@ const worker = new Worker(
       }
 
       await job.updateProgress({ stage: 'done', percent: 100, attempt, maxAttempts: MAX_ATTEMPTS });
+      // Success — this attempt's finalPath is the real result. It's
+      // intentionally NOT removed from tempFiles-triggered cleanup here,
+      // since we simply never reach the catch block on this path.
       return { filePath: finalPath, title };
     } catch (err) {
-      // Clean up every temp file this attempt might have created, whether
-      // it failed, was cancelled, or partially completed.
       for (const f of tempFiles) safeUnlink(f);
 
       if (cancelled || err instanceof UnrecoverableError) {
         throw new UnrecoverableError('Job was cancelled by user');
       }
       if (err.message === 'PROCESS_KILLED') {
-        // A process was killed but not due to our own cancellation flag —
-        // treat as a normal failure so the retry system still handles it.
         throw new Error('A processing step was interrupted unexpectedly');
       }
       throw err;
@@ -198,9 +199,6 @@ const worker = new Worker(
   {
     connection,
     lockDuration: 10 * 60 * 1000,
-    // Dropped to 1 after an out-of-memory crash on Render's free tier
-    // (512MB), to isolate whether concurrency was the cause before
-    // considering bigger architectural changes.
     concurrency: 1,
   }
 );

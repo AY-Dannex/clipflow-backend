@@ -116,8 +116,15 @@ router.get('/download/result/:jobId', async (req, res) => {
   const downloadName = `${sanitizeFilename(title)}.mp4`;
 
   res.download(filePath, downloadName, (err) => {
-    fs.unlink(filePath, () => {});
-    if (err) console.error('Error sending file:', err.message);
+    if (!err) {
+      // Only clean up once the file has actually reached the user. If the
+      // transfer failed or was interrupted (e.g. a dropped connection),
+      // we deliberately leave the file in place so clicking "Save file"
+      // again can succeed instead of finding nothing there.
+      fs.unlink(filePath, () => {});
+    } else {
+      console.error('Error sending file (file kept for retry):', err.message);
+    }
   });
 });
 

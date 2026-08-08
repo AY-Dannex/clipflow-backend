@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const videoInfoRoute = require('./routes/videoInfo');
 const downloadRoute = require('./routes/download');
+const { startCleanupScheduler } = require('./utils/cleanupScheduler');
 
 const app = express();
 
@@ -24,3 +25,5 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+startCleanupScheduler();
